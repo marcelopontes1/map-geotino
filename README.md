@@ -49,10 +49,4 @@ Dans Claude Desktop, demander simplement :
 
 > *Fais une étude de faisabilité géothermique pour les coordonnées 48.8566, 2.3522*
 
-Claude collecte les données et génère un rapport PDF professionnel dans le dossier `C:\mcp-tino`.
-
-## PDF (optionnel)
-
-Sans installation supplémentaire, les rapports sont sauvegardés en Markdown (`.md`).
-
-Pour activer la génération PDF, installer [GTK3 Runtime for Windows](https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer/releases) puis relancer `uv sync`.
+Claude collecte les données, évalue la technique recommandée (nappe ou sonde géothermique), rédige le rapport et le sauvegarde en **Word (.docx)** dans le dossier `C:\mcp-tino`. Aucune dépendance système supplémentaire n'est requise.

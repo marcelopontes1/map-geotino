@@ -504,72 +504,308 @@ async def _safe(coro) -> str:
         return f"*Erreur lors de la collecte : {e}*"
 
 
-# ── 8. Sauvegarde du rapport rédigé par Claude ───────────────────────────────
+# ── 8. Recommandation technique nappe vs sonde ────────────────────────────────
 
-_CSS = """
-@page { margin: 2cm 2.5cm; size: A4; }
-body { font-family: Georgia, 'Times New Roman', serif; font-size: 11pt; color: #1a1a1a; line-height: 1.6; }
-h1 { font-size: 18pt; color: #003366; border-bottom: 2px solid #003366; padding-bottom: 6px; margin-top: 0; }
-h2 { font-size: 14pt; color: #003366; margin-top: 24px; border-bottom: 1px solid #aac; padding-bottom: 4px; }
-h3 { font-size: 12pt; color: #004080; margin-top: 18px; }
-table { width: 100%; border-collapse: collapse; font-size: 10pt; margin: 12px 0; }
-th { background: #003366; color: white; padding: 6px 10px; text-align: left; }
-td { padding: 5px 10px; border-bottom: 1px solid #dde; }
-tr:nth-child(even) td { background: #f4f7fb; }
-blockquote { border-left: 4px solid #003366; margin: 16px 0; padding: 10px 16px; background: #f0f4f8; }
-blockquote h2 { border: none; margin-top: 0; }
-code { font-family: monospace; font-size: 9.5pt; background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
-a { color: #004080; }
-strong { color: #111; }
-em { color: #444; }
-hr { border: none; border-top: 1px solid #ccc; margin: 20px 0; }
-p { margin: 6px 0; }
-ul, ol { margin: 6px 0; padding-left: 22px; }
-li { margin: 2px 0; }
-"""
+@app.tool()
+async def evaluate_technique(
+    ph: float,
+    conductivity_us: float,
+    calcium_mg: float,
+    magnesium_mg: float,
+    aquifer_wells_count: int,
+    min_well_depth_m: float,
+    geology_dominant: str,
+    cavities_count: int,
+    terrain_movements_count: int,
+) -> str:
+    """Évalue la technique géothermique recommandée (nappe ou sonde) à partir des données collectées.
+
+    Extraire ces valeurs depuis collect_site_data avant d'appeler cet outil :
+    - ph : code SANDRE 1302
+    - conductivity_us : code SANDRE 1303 (µS/cm)
+    - calcium_mg : code SANDRE 1374 (mg/L)
+    - magnesium_mg : code SANDRE 1372 (mg/L)
+    - aquifer_wells_count : nombre d'ouvrages BSS recensés
+    - min_well_depth_m : profondeur minimale des ouvrages BSS (proxy nappe superficielle)
+    - geology_dominant : type dominant ex. "alluvial", "metamorphique", "sedimentaire", "cristallin"
+    - cavities_count : nombre de cavités souterraines recensées
+    - terrain_movements_count : nombre de mouvements de terrain recensés
+    """
+    th_f = (calcium_mg / 20.04 + magnesium_mg / 12.16) * 5
+
+    score_nappe = 0
+    score_sonde = 0
+    points_nappe: list[str] = []
+    points_sonde: list[str] = []
+    vigilance: list[str] = []
+
+    # Aquifère
+    if aquifer_wells_count >= 5:
+        score_nappe += 3
+        points_nappe.append(f"Aquifère bien documenté ({aquifer_wells_count} ouvrages BSS)")
+    elif aquifer_wells_count >= 1:
+        score_nappe += 1
+        vigilance.append("Peu d'ouvrages BSS — productivité à confirmer par essai de pompage")
+    else:
+        score_sonde += 2
+        points_sonde.append("Absence d'aquifère documenté → sonde privilégiée")
+
+    # Profondeur nappe
+    if min_well_depth_m <= 30:
+        score_nappe += 2
+        points_nappe.append(f"Nappe accessible (profondeur ~ {min_well_depth_m:.0f} m → forage économique)")
+    elif min_well_depth_m <= 60:
+        score_nappe += 1
+        vigilance.append(f"Profondeur modérée ({min_well_depth_m:.0f} m) → coût de forage à évaluer")
+    else:
+        score_sonde += 1
+        points_sonde.append(f"Nappe profonde ({min_well_depth_m:.0f} m) → sonde compétitive en coût")
+
+    # pH
+    if ph >= 7.0:
+        score_nappe += 1
+        points_nappe.append(f"pH neutre à basique ({ph:.2f}) — eau non agressive")
+    elif ph >= 6.5:
+        vigilance.append(f"pH légèrement acide ({ph:.2f}) → matériaux résistants requis (inox, PEHD)")
+    else:
+        score_sonde += 2
+        points_sonde.append(f"pH acide ({ph:.2f}) → risque de corrosion sur doublet ouvert")
+
+    # Dureté TH
+    if th_f <= 20:
+        score_nappe += 1
+        points_nappe.append(f"Eau douce (TH = {th_f:.1f} °f) — faible risque d'entartrage")
+    elif th_f <= 35:
+        vigilance.append(f"Dureté modérée (TH = {th_f:.1f} °f) → traitement anti-tartre préventif recommandé")
+    else:
+        score_sonde += 1
+        points_sonde.append(f"Eau dure (TH = {th_f:.1f} °f) → risque d'entartrage des échangeurs")
+
+    # Conductivité
+    if conductivity_us <= 800:
+        score_nappe += 1
+        points_nappe.append(f"Conductivité faible ({conductivity_us:.0f} µS/cm) — pas de risque de corrosion")
+    elif conductivity_us <= 1500:
+        vigilance.append(f"Conductivité moyenne ({conductivity_us:.0f} µS/cm) — surveiller la corrosion")
+    else:
+        score_sonde += 2
+        points_sonde.append(f"Conductivité élevée ({conductivity_us:.0f} µS/cm) → risque de corrosion accéléré")
+
+    # Géologie
+    geo = geology_dominant.lower()
+    if any(k in geo for k in ("alluvial", "sable", "gravier", "fz")):
+        score_nappe += 2
+        points_nappe.append("Géologie alluviale (sables/graviers) — bonne perméabilité, nappe productive")
+    elif any(k in geo for k in ("metamorphi", "cristallin", "gneiss", "granite", "schiste")):
+        score_sonde += 2
+        points_sonde.append("Roche cristalline ou métamorphique — bonne conductivité thermique pour sondes verticales")
+    elif any(k in geo for k in ("sedimentaire", "calcaire", "craie", "grès")):
+        score_nappe += 1
+        points_nappe.append("Géologie sédimentaire — aquifère possible selon la perméabilité")
+
+    # Cavités
+    if cavities_count == 0:
+        score_nappe += 1
+    elif cavities_count <= 2:
+        vigilance.append(f"{cavities_count} cavité(s) — vérifier les zones d'exclusion de forage (arrêté 25/06/2015)")
+    else:
+        score_sonde += 1
+        points_sonde.append(f"Nombreuses cavités ({cavities_count}) — risque pour les forages profonds")
+
+    # Mouvements de terrain
+    if terrain_movements_count > 20:
+        vigilance.append(f"Mouvements de terrain importants ({terrain_movements_count} occurrences) — étude géotechnique renforcée recommandée")
+
+    # Décision
+    if score_nappe > score_sonde:
+        technique = "NAPPE — doublet eau-eau"
+        emoji = "💧"
+        conclusion = (
+            f"L'ensemble des données hydrogéologiques collectées oriente favorablement vers un système "
+            f"de géothermie sur **nappe** (doublet eau-eau). L'aquifère identifié présente des caractéristiques "
+            f"physico-chimiques compatibles avec l'exploitation géothermique : TH calculé à {th_f:.1f} °f, "
+            f"conductivité de {conductivity_us:.0f} µS/cm. Un essai de pompage sur l'ouvrage pilote permettra "
+            f"de confirmer les débits exploitables et de dimensionner le doublet."
+        )
+    elif score_sonde > score_nappe:
+        technique = "SONDE — géothermique verticale (boucle fermée)"
+        emoji = "🔄"
+        conclusion = (
+            f"Le contexte hydrogéologique et la qualité des eaux orientent vers des **sondes géothermiques "
+            f"verticales** à boucle fermée. Ce système, indépendant de la qualité de l'eau souterraine, "
+            f"supprime les contraintes liées au pH ({ph:.2f}) et à la dureté (TH = {th_f:.1f} °f), "
+            f"et s'adapte mieux à la géologie identifiée. Le dimensionnement sera basé sur la conductivité "
+            f"thermique du sous-sol, à déterminer par essai de réponse thermique (TRT)."
+        )
+    else:
+        technique = "À CONFIRMER — données insuffisantes pour trancher"
+        emoji = "⚖️"
+        conclusion = (
+            f"Les données disponibles ne permettent pas de trancher clairement entre les deux techniques. "
+            f"Une étude de faisabilité approfondie (essai de pompage, diagraphie, TRT) est nécessaire "
+            f"avant de statuer sur l'orientation technique."
+        )
+
+    lines = [
+        f"## {emoji} Technique recommandée : {technique}\n",
+        f"**Score nappe : {score_nappe} pts | Score sonde : {score_sonde} pts**\n",
+        "### Éléments déterminants\n",
+    ]
+    for p in (points_nappe if score_nappe >= score_sonde else points_sonde):
+        lines.append(f"- ✅ {p}")
+    if vigilance:
+        lines.append("\n### Points de vigilance\n")
+        for v in vigilance:
+            lines.append(f"- ⚠️ {v}")
+    lines.append(f"\n### Conclusion\n{conclusion}")
+    lines.append(f"\n*TH calculé : ({calcium_mg:.1f}/20,04 + {magnesium_mg:.1f}/12,16) × 5 = **{th_f:.1f} °f***")
+    return "\n".join(lines)
+
+
+# ── 9. Conversion Markdown → Word (.docx) ────────────────────────────────────
+
+def _add_inline(para, text: str):
+    """Ajoute du texte avec formatage inline (**gras**, *italique*)."""
+    import re
+    parts = re.split(r"(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)", text)
+    for part in parts:
+        if part.startswith("**") and part.endswith("**") and len(part) > 4:
+            para.add_run(part[2:-2]).bold = True
+        elif part.startswith("*") and part.endswith("*") and len(part) > 2:
+            para.add_run(part[1:-1]).italic = True
+        elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+            run = para.add_run(part[1:-1])
+            run.font.name = "Courier New"
+        elif part:
+            para.add_run(part)
+
+
+def _set_cell_bg(cell, hex_color: str):
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:fill"), hex_color)
+    shd.set(qn("w:val"), "clear")
+    cell._tc.get_or_add_tcPr().append(shd)
+
+
+def _md_to_docx(content: str, path: Path):
+    import re
+    from docx import Document
+    from docx.shared import Pt, RGBColor, Cm
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    doc = Document()
+    for sec in doc.sections:
+        sec.top_margin = sec.bottom_margin = Cm(2.5)
+        sec.left_margin = sec.right_margin = Cm(2.5)
+
+    lines = content.split("\n")
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        s = raw.strip()
+
+        if s.startswith("### "):
+            doc.add_heading(s[4:], level=3)
+        elif s.startswith("## "):
+            doc.add_heading(s[3:], level=2)
+        elif s.startswith("# "):
+            doc.add_heading(s[2:], level=1)
+
+        elif s == "---":
+            p = doc.add_paragraph()
+            pPr = p._p.get_or_add_pPr()
+            pBdr = OxmlElement("w:pBdr")
+            bot = OxmlElement("w:bottom")
+            bot.set(qn("w:val"), "single"); bot.set(qn("w:sz"), "6")
+            bot.set(qn("w:space"), "1"); bot.set(qn("w:color"), "AAAAAA")
+            pBdr.append(bot); pPr.append(pBdr)
+
+        elif s.startswith("|"):
+            rows_data = []
+            is_header = True
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                row_s = lines[i].strip()
+                if re.match(r"^\|[-| :]+\|$", row_s):
+                    is_header = False
+                    i += 1
+                    continue
+                cells = [c.strip() for c in row_s.split("|")[1:-1]]
+                rows_data.append((cells, is_header))
+                if is_header:
+                    is_header = False
+                i += 1
+            if rows_data:
+                ncols = max(len(r[0]) for r in rows_data)
+                tbl = doc.add_table(rows=len(rows_data), cols=ncols)
+                tbl.style = "Table Grid"
+                for ri, (cells, hdr) in enumerate(rows_data):
+                    for ci, txt in enumerate(cells[:ncols]):
+                        cell = tbl.rows[ri].cells[ci]
+                        cell.text = ""
+                        p = cell.paragraphs[0]
+                        _add_inline(p, txt)
+                        p.paragraph_format.space_before = Pt(2)
+                        p.paragraph_format.space_after = Pt(2)
+                        if hdr:
+                            for run in p.runs:
+                                run.bold = True
+                                run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+                            _set_cell_bg(cell, "003366")
+                doc.add_paragraph()
+            continue
+
+        elif s.startswith("> "):
+            inner = s[2:]
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Cm(0.8)
+            if re.match(r"^#{1,3} ", inner):
+                run = p.add_run(inner.lstrip("# ").strip())
+                run.bold = True
+                run.font.size = Pt(13)
+                run.font.color.rgb = RGBColor(0x00, 0x33, 0x66)
+            else:
+                _add_inline(p, inner)
+
+        elif s.startswith("- ") or s.startswith("* "):
+            p = doc.add_paragraph(style="List Bullet")
+            _add_inline(p, s[2:])
+
+        elif re.match(r"^\d+\. ", s):
+            p = doc.add_paragraph(style="List Number")
+            _add_inline(p, re.sub(r"^\d+\. ", "", s))
+
+        elif s:
+            p = doc.add_paragraph()
+            _add_inline(p, s)
+
+        i += 1
+
+    doc.save(str(path))
+
+
+# ── 10. Sauvegarde du rapport rédigé par Claude ───────────────────────────────
 
 @app.tool()
 async def save_report(content: str, output_path: str = "") -> str:
-    """Sauvegarde le rapport rédigé par Claude au format PDF (défaut) ou Markdown.
-    output_path : chemin complet. Extension .md → Markdown, sinon → PDF.
-    Par défaut : dossier mcp_tino, nom auto-généré en .pdf.
-    Si les bibliothèques PDF ne sont pas disponibles, bascule automatiquement en .md."""
+    """Sauvegarde le rapport rédigé par Claude au format Word (.docx, défaut) ou Markdown (.md).
+    output_path : chemin complet du fichier. Extension .md → Markdown brut, sinon → Word.
+    Par défaut : dossier mcp_tino, nom auto-généré en .docx."""
     import datetime
-    import markdown as md
 
-    if output_path:
-        path = Path(output_path)
-    else:
-        path = Path(__file__).parent / f"rapport_{datetime.date.today().isoformat()}.pdf"
-
+    path = Path(output_path) if output_path else \
+        Path(__file__).parent / f"rapport_{datetime.date.today().isoformat()}.docx"
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if path.suffix.lower() == ".md":
         path.write_text(content, encoding="utf-8")
         return f"✅ Rapport Markdown sauvegardé : {path} ({len(content)} caractères)"
 
-    # PDF — WeasyPrint nécessite pango/cairo (Linux/macOS: natif ; Windows: GTK3 Runtime)
-    try:
-        from weasyprint import HTML
-        html_body = md.markdown(content, extensions=["tables", "fenced_code"])
-        html = f"""<!DOCTYPE html>
-<html lang="fr"><head><meta charset="utf-8">
-<title>Rapport hydrogéologique</title>
-<style>{_CSS}</style>
-</head><body>{html_body}</body></html>"""
-        HTML(string=html).write_pdf(str(path))
-        size_kb = path.stat().st_size // 1024
-        return f"✅ Rapport PDF sauvegardé : {path} ({size_kb} Ko)"
-    except OSError:
-        # Bibliothèques système manquantes (Windows sans GTK3) → fallback Markdown
-        md_path = path.with_suffix(".md")
-        md_path.write_text(content, encoding="utf-8")
-        return (
-            f"⚠️ PDF impossible (bibliothèques système manquantes).\n"
-            f"Rapport Markdown sauvegardé : {md_path}\n"
-            f"Pour activer le PDF sur Windows : installez GTK3 Runtime depuis\n"
-            f"https://github.com/tschoonj/GTK-for-Windows-Runtime-Environment-Installer"
-        )
+    _md_to_docx(content, path)
+    size_kb = path.stat().st_size // 1024
+    return f"✅ Rapport Word sauvegardé : {path} ({size_kb} Ko)"
 
 
 def main():
