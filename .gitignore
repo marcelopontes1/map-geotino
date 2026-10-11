@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Rapports générés
+rapport_*.pdf
+rapport_*.md
+
+# PDFs de référence (trop lourds pour git)
+*.pdf
